@@ -1,0 +1,16 @@
+[
+  {
+    "name": "IANA example domains",
+    "query": "site:iana.org/help/example-domains example domains documentation",
+    "domains": ["iana.org"],
+    "topic_groups": [["example", "reserved"], ["domain"], ["documentation", "illustrative"]],
+    "fetch_groups": [["example", "reserved"], ["domain"], ["documentation", "illustrative"]]
+  },
+  {
+    "name": "Docker Compose documentation",
+    "query": "site:docs.docker.com compose multi-container applications",
+    "domains": ["docs.docker.com"],
+    "topic_groups": [["compose"], ["container", "application", "service"]],
+    "fetch_groups": [["compose"], ["container", "application", "service"]]
+  }
+]

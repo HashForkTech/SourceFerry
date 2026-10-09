@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+.venv/
+.tmp/
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+artifacts/
+*.log
+*.zip
+*.tar.gz

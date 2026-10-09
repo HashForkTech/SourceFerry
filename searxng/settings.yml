@@ -1,0 +1,15 @@
+use_default_settings: true
+
+server:
+  bind_address: "0.0.0.0"
+  port: 8080
+  # Compose supplies the real value via SearXNG's SEARXNG_SECRET override.
+  secret_key: "set-via-SEARXNG_SECRET"
+  # Only the authenticated gateway uses this internal service.
+  limiter: false
+  public_instance: false
+
+search:
+  formats:
+    - html
+    - json

@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Gateway installation canary</title></head>
+<body>
+  <main>
+    <h1>Gateway installation canary</h1>
+    <p>Static canary: violet otter documents the search and fetch installation.
+      The gateway sends this page through the installed Crawl4AI browser so the
+      acceptance checks can verify readable Markdown from known content. This
+      substantive paragraph stays visible during content filtering and gives the
+      verifier stable known content independent of search rankings or changing
+      documentation. The public HTTP echo service serves this bundled page
+      without requiring a third party account or an API key.</p>
+    <p>This page checks that Crawl4AI returns readable Markdown and executes browser JavaScript.</p>
+  </main>
+  <script>
+    const marker = document.createElement('p');
+    marker.textContent = ['Browser rendered:', 'cobalt', 'badger', '7319'].join(' ') +
+      '. This paragraph exists only after JavaScript runs in the browser. ' +
+      'The browser creates a new visible document element and appends it to the main article. ' +
+      'A successful fetch includes this rendered content in its Markdown output, proving that ' +
+      'the installed crawler can process dynamic pages as well as static text. ' +
+      'The installation verifier checks this sentence alongside the static canary before testing public search results.';
+    document.querySelector('main').appendChild(marker);
+  </script>
+</body>
+</html>
