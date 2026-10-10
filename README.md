@@ -2,7 +2,7 @@
 
 *A local web search and fetch gateway for AI clients*
 
-A local, authenticated search and page-fetch API for Harness or other clients. SearXNG discovers results; Crawl4AI renders pages in Chromium and converts them to Markdown. The gateway deduplicates URLs, cleans enriched search snippets, and retains the original search snippet when a crawl fails. Direct fetches return the full Crawl4AI payload, including `content.markdown`.
+SourceFerry brings web search and page content to AI clients through a local, authenticated API. It cleans, deduplicates, and limits search snippets to help reduce the tokens sent to AI models. Powered by SearXNG and Crawl4AI, it combines metasearch with browser rendering and readable Markdown extraction.
 
 ```text
 Harness -> gateway:8080 -> SearXNG (search)
