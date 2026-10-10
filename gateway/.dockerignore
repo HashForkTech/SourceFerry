@@ -2,3 +2,7 @@
 !Dockerfile
 !requirements.txt
 !app.py
+!__init__.py
+!contracts.py
+!middleware.py
+!bootstrap.txt

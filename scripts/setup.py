@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import secrets
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-from common import ROOT, SECRET_KEYS, is_placeholder, parse_env
+from common import ROOT, SECRET_KEYS, is_placeholder, parse_env, replace_env_value
 
 
 def restrict_permissions(path: Path) -> None:
@@ -56,6 +55,7 @@ def configure(path: Path, rotate: bool = False) -> None:
     existing = path.exists()
     content = path.read_text(encoding="utf-8-sig") if existing else template
     values = parse_env(content)
+    original_values = dict(values)
     for key, value in defaults.items():
         if key not in values:
             content = content.rstrip() + f"\n{key}={value}\n"
@@ -75,13 +75,18 @@ def configure(path: Path, rotate: bool = False) -> None:
     for key in SECRET_KEYS:
         if rotate or is_placeholder(values[key]):
             value = secrets.token_hex(32)
-            while value in kept:
+            while value in kept or value in original_values.values():
                 value = secrets.token_hex(32)
             kept.add(value)
             values[key] = value
-            content = re.sub(rf"^{re.escape(key)}\s*=.*$", f"{key}={value}", content, flags=re.MULTILINE)
+            content = replace_env_value(content, key, value)
             generated += 1
 
+    written = parse_env(content)
+    if any(written.get(key) != values[key] or is_placeholder(written.get(key, "")) for key in SECRET_KEYS):
+        raise ValueError("Secret update verification failed; the environment file was not replaced.")
+    if rotate and any(written[key] == original_values.get(key) for key in SECRET_KEYS):
+        raise ValueError("Secret rotation did not replace every credential.")
     write_private(path, content.rstrip() + "\n")
     action = "Updated" if existing else "Created"
     print(f"{action} private environment file: {path}")

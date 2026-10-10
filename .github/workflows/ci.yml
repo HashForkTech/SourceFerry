@@ -1,0 +1,40 @@
+name: Code and package checks
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: |
+          docker build -t sourceferry-ci gateway
+          docker build --target tools -t sourceferry-ci-tools gateway
+      - name: Offline regression tests
+        run: docker run --rm --network none -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/workspace:ro" -w /workspace sourceferry-ci python -B -m unittest discover -s tests -v
+      - name: Lint, types, and release package
+        run: |
+          docker run --rm --user 0 -v "$PWD:/workspace" -w /workspace sourceferry-ci-tools sh -c 'pip install -r requirements-dev.txt && ruff check gateway scripts tests integration && mypy && python scripts/package.py'
+          bash -n install.sh
+          shellcheck install.sh
+      - name: Test extracted release
+        run: |
+          unzip -q dist/sourceferry.zip -d /tmp/sourceferry-package
+          docker run --rm --network none -e PYTHONDONTWRITEBYTECODE=1 -v /tmp/sourceferry-package/sourceferry:/workspace:ro -w /workspace sourceferry-ci python -B -m unittest discover -s tests -v
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - run: python -B -m unittest discover -s tests -p 'test_install*.py' -v

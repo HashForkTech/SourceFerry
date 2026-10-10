@@ -1,0 +1,1 @@
+"""SourceFerry authenticated search gateway."""

@@ -3,17 +3,43 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 import re
+import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from gateway.contracts import numeric_settings, valid_http_url, canonical_url  # noqa: E402,F401
 SECRET_KEYS = ("LOCAL_WEB_API_TOKEN", "CRAWL4AI_API_TOKEN", "SEARXNG_SECRET_KEY")
 ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$")
+
+
+def split_env_value(value: str) -> tuple[str, str]:
+    """Return a literal value and its optional comment without interpolation."""
+    if value.startswith(('"', "'")):
+        end = value.find(value[0], 1)
+        if end < 0 or (value[end + 1:].strip() and not value[end + 1:].strip().startswith("#")):
+            raise ValueError("Invalid quoted .env value.")
+        return value[1:end], value[end + 1:]
+    parts = re.split(r"([ \t]+#.*)$", value, maxsplit=1)
+    return parts[0].strip(), parts[1] if len(parts) > 1 else ""
+
+
+def replace_env_value(text: str, key: str, value: str) -> str:
+    def replacement(match: re.Match) -> str:
+        _, comment = split_env_value(match.group("value"))
+        return f"{match.group('prefix')}{key}={value}{comment}"
+    result, count = re.subn(
+        rf"^(?P<prefix>[ \t]*){re.escape(key)}[ \t]*=[ \t]*(?P<value>[^\r\n]*)",
+        replacement, text, flags=re.MULTILINE,
+    )
+    if count != 1:
+        raise ValueError(f"Expected exactly one assignment for {key}.")
+    return result
 
 
 def parse_env(text: str) -> dict[str, str]:
@@ -29,9 +55,7 @@ def parse_env(text: str) -> dict[str, str]:
         key, value = match.groups()
         if key in result:
             raise ValueError(f"Duplicate .env setting: {key}.")
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            value = value[1:-1]
-        result[key] = value
+        result[key] = split_env_value(value)[0]
     return result
 
 
@@ -60,13 +84,13 @@ class GatewayClient:
             or "http://127.0.0.1:8080"
         ).rstrip("/")
         parts = urlsplit(self.base_url)
-        if parts.scheme not in {"http", "https"} or not parts.hostname or parts.username or parts.password or parts.query or parts.fragment:
+        if not valid_http_url(self.base_url) or parts.query or parts.fragment:
             raise ValueError("Gateway base URL must be an HTTP(S) URL without credentials, query, or fragment.")
         self.token = os.environ.get("LOCAL_WEB_API_TOKEN") or self.settings.get("LOCAL_WEB_API_TOKEN", "")
         configured_timeout = os.environ.get("API_CLIENT_TIMEOUT_SECONDS") or self.settings.get("API_CLIENT_TIMEOUT_SECONDS", "1200")
-        self.timeout = float(timeout if timeout is not None else configured_timeout)
-        if not math.isfinite(self.timeout) or self.timeout <= 0:
-            raise ValueError("Client timeout must be a positive finite number.")
+        self.timeout = float(numeric_settings({
+            "API_CLIENT_TIMEOUT_SECONDS": str(timeout if timeout is not None else configured_timeout),
+        })["API_CLIENT_TIMEOUT_SECONDS"])
         self.opener = urllib.request.build_opener(NoRedirect())
 
     def redact(self, text: str) -> str:

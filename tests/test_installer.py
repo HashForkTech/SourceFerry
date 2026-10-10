@@ -17,6 +17,32 @@ import install
 
 
 class InstallerHelperTests(unittest.TestCase):
+    def test_engine_minimum_includes_localhost_publication_fix(self):
+        for version in ('28.0.0', '29.7.2', '28.1.0-desktop.1'):
+            install.validate_engine_version(version)
+        for version in ('20.10.0', '27.5.1', 'garbage', '28.0'):
+            with self.assertRaises(ValueError):
+                install.validate_engine_version(version)
+
+    def test_all_numeric_bounds_match_runtime_contract(self):
+        from gateway.contracts import INTEGER_SETTINGS, FLOAT_SETTINGS, numeric_settings
+        with tempfile.TemporaryDirectory() as directory:
+            for key, (_, minimum, maximum) in INTEGER_SETTINGS.items():
+                for value in (minimum, maximum):
+                    values = {key: str(value)}
+                    numeric_settings(values)
+                    install.validate_environment(self.environment(directory, **values))
+                for value in (minimum - 1, maximum + 1, '1.5', 'nan'):
+                    values = {key: str(value)}
+                    with self.assertRaises(ValueError):
+                        numeric_settings(values)
+                    with self.assertRaises(ValueError):
+                        install.validate_environment(self.environment(directory, **values))
+            for key, (_, maximum) in FLOAT_SETTINGS.items():
+                for value in ('0', '-1', 'nan', 'inf', str(maximum + 1)):
+                    with self.assertRaises(ValueError):
+                        install.validate_environment(self.environment(directory, **{key: value}))
+
     def environment(self, directory, **overrides):
         path = Path(directory) / ".env"
         values = {"LOCAL_WEB_API_TOKEN": "a" * 64, "CRAWL4AI_API_TOKEN": "b" * 64, "SEARXNG_SECRET_KEY": "c" * 64,
@@ -110,9 +136,9 @@ a = sys.argv[1:]
 with open(os.environ['FAKE_DOCKER_LOG'], 'a') as log:
     log.write(json.dumps(a) + '\n')
 if a[:1] == ['info']:
-    print('linux|4|8589934592')
+    print(os.environ.get('FAKE_DOCKER_INFO', 'linux|4|8589934592|29.7.2'))
 elif a[:2] == ['context', 'inspect']:
-    print('unix:///var/run/docker.sock')
+    print(os.environ.get('FAKE_DOCKER_HOST', 'unix:///var/run/docker.sock'))
 elif a[:2] == ['image', 'inspect']:
     print('sha256:tested-gateway-image')
 elif a[:2] == ['compose', 'version']:
@@ -145,7 +171,7 @@ elif a[:1] == ['run']:
 
 @unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("bash"), "Bash installer orchestration runs on Linux")
 class BashInstallerTests(unittest.TestCase):
-    def run_installer(self, *arguments, fail=None):
+    def run_installer(self, *arguments, fail=None, docker_info=None, docker_host=None):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         root = Path(directory.name)
@@ -156,11 +182,29 @@ class BashInstallerTests(unittest.TestCase):
         env = dict(os.environ, PATH=f"{root}{os.pathsep}{os.environ['PATH']}", FAKE_DOCKER_LOG=str(root / "commands.jsonl"), COMPOSE_PROJECT_NAME="test-install")
         env.pop("DOCKER_HOST", None)
         env.pop("FAKE_FAIL", None)
+        if docker_info:
+            env['FAKE_DOCKER_INFO'] = docker_info
+        if docker_host:
+            env['FAKE_DOCKER_HOST'] = docker_host
         if fail:
             env["FAKE_FAIL"] = fail
         result = subprocess.run(["bash", str(root / "install.sh"), *arguments], env=env, capture_output=True, text=True, timeout=30)
         calls = [json.loads(line) for line in (root / "commands.jsonl").read_text().splitlines()]
         return result, calls, root
+
+    def test_prerequisite_failures_record_a_terminal_status(self):
+        for values in ({'docker_info': 'windows|4|8589934592|29.7.2'},
+                       {'docker_host': 'tcp://remote:2376'}):
+            result, calls, root = self.run_installer(**values)
+            self.assertNotEqual(result.returncode, 0)
+            report = json.loads((root / 'artifacts/installation-report.json').read_text())
+            self.assertEqual(report['installer_status'], 'failed')
+            self.assertFalse(any('up' in call for call in calls))
+
+    def test_rotation_flag_reaches_secret_setup(self):
+        result, calls, _ = self.run_installer('--rotate-secrets')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(any('/workspace/scripts/setup.py' in call and '--rotate-secrets' in call for call in calls))
 
     def test_install_honors_project_waits_runs_regressions_and_prints_token_last(self):
         result, calls, root = self.run_installer("--wait-timeout", "180")

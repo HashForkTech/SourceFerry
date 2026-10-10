@@ -13,6 +13,28 @@ from pathlib import Path
 from common import ROOT, SECRET_KEYS, is_placeholder, read_env
 
 FILES = (
+    "CONTRIBUTING.md",
+    "pyproject.toml",
+    "requirements-dev.txt",
+    "docs/API.md",
+    "docs/CONFIGURATION.md",
+    "docs/OPERATIONS.md",
+    "gateway/__init__.py",
+    "gateway/contracts.py",
+    "gateway/middleware.py",
+    "gateway/requirements.in",
+    "gateway/bootstrap.in",
+    "gateway/bootstrap.txt",
+    "crawler/Dockerfile",
+    "crawler/.dockerignore",
+    "crawler/requirements.in",
+    "crawler/requirements.txt",
+    "crawler/os-packages.txt",
+    "scripts/lock_dependencies.py",
+    "integration/check_egress.py",
+    "tests/test_request_limits.py",
+    "tests/test_installation_windows.py",
+
     ".env.example",
     ".gitignore",
     ".gitattributes",
@@ -69,12 +91,16 @@ def build(output: Path) -> None:
                 info.external_attr = (0o100755 if name == "install.sh" else 0o100644) << 16
                 info.compress_type = zipfile.ZIP_DEFLATED
                 archive.writestr(info, (ROOT / name).read_bytes())
+        # mkstemp creates a private 0600 file. This allowlisted release must be
+        # readable by the host runner when a root container builds it.
+        temporary.chmod(0o644)
         os.replace(temporary, output)
     finally:
         temporary.unlink(missing_ok=True)
     digest = hashlib.sha256(output.read_bytes()).hexdigest()
     checksum = output.with_suffix(output.suffix + ".sha256")
     checksum.write_text(f"{digest}  {output.name}\n", encoding="utf-8")
+    checksum.chmod(0o644)
     print(f"Created {output} ({len(FILES)} allowlisted files)")
     print(f"Created {checksum}")
     print("Local .env, environments, caches, logs, and source notes are excluded.")

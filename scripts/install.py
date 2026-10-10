@@ -6,8 +6,6 @@ import argparse
 from datetime import datetime, timezone
 import ipaddress
 import json
-import math
-import os
 from pathlib import Path
 import platform
 import re
@@ -17,9 +15,10 @@ import sys
 from urllib.parse import urlsplit
 import urllib.request
 
-from common import ROOT, SECRET_KEYS, is_placeholder, read_env
+from common import ROOT, SECRET_KEYS, is_placeholder, read_env, numeric_settings, valid_http_url
 
 MIN_COMPOSE_VERSION = (2, 24, 0)
+MIN_ENGINE_VERSION = (28, 0, 0)
 MIN_MEMORY = 4 * 1024**3
 MIN_DISK = 10 * 1024**3
 MIN_CPUS = 2
@@ -32,6 +31,12 @@ def validate_compose_version(version: str) -> None:
     match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)(?:[-+][A-Za-z0-9_.-]+)?", version.strip())
     if not match or tuple(int(part) for part in match.groups()) < MIN_COMPOSE_VERSION:
         raise ValueError("Docker Compose v2.24.0 or later is required. Update Docker Desktop or the Docker Compose plugin.")
+
+
+def validate_engine_version(version: str) -> None:
+    match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)(?:[-+][A-Za-z0-9_.-]+)?", version.strip())
+    if not match or tuple(int(part) for part in match.groups()) < MIN_ENGINE_VERSION:
+        raise ValueError("Docker Engine 28.0.0 or later is required for localhost port isolation.")
 
 
 def validate_resources(memory_bytes: int, cpus: int, disk_bytes: int) -> None:
@@ -68,20 +73,7 @@ def validate_environment(path: Path) -> dict[str, str]:
         raise ValueError("GATEWAY_BIND_ADDRESS must be an IP address and GATEWAY_PORT must be an integer.") from None
     if not 1 <= port <= 65535:
         raise ValueError("GATEWAY_PORT must be between 1 and 65535.")
-    for key in ("SEARXNG_TIMEOUT_SECONDS", "CRAWL4AI_TIMEOUT_SECONDS", "API_CLIENT_TIMEOUT_SECONDS"):
-        try:
-            number = float(values.get(key, "1200" if key == "API_CLIENT_TIMEOUT_SECONDS" else "120"))
-        except ValueError:
-            raise ValueError(f"{key} must be a positive finite number.") from None
-        if not math.isfinite(number) or number <= 0:
-            raise ValueError(f"{key} must be a positive finite number.")
-    for key, fallback in (("ENRICHMENT_CONCURRENCY", "4"), ("SNIPPET_MAX_CHARS", "1200")):
-        try:
-            number = int(values.get(key, fallback))
-        except ValueError:
-            raise ValueError(f"{key} must be a positive integer.") from None
-        if number <= 0:
-            raise ValueError(f"{key} must be a positive integer.")
+    numeric_settings(values)
     local_address = ipaddress.ip_address("::1" if address.version == 6 else "127.0.0.1") if address.is_unspecified else address
     hostname = f"[{local_address}]" if local_address.version == 6 else str(local_address)
     host_url = f"http://{hostname}:{port}"
@@ -89,7 +81,7 @@ def validate_environment(path: Path) -> dict[str, str]:
     if client_url == "http://127.0.0.1:8080":
         client_url = host_url
     parts = urlsplit(client_url)
-    if parts.scheme not in {"http", "https"} or not parts.hostname or parts.username or parts.password or parts.query or parts.fragment or "\n" in client_url or "\r" in client_url:
+    if not valid_http_url(client_url) or parts.query or parts.fragment:
         raise ValueError("LOCAL_WEB_GATEWAY_URL must be an HTTP(S) URL without credentials, query or fragment.")
     return {"bind": bind, "port": str(port), "host_url": host_url, "client_url": client_url, **{key: values[key] for key in SECRET_KEYS}}
 
@@ -151,6 +143,7 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     preflight = sub.add_parser("preflight")
     preflight.add_argument("--compose-version", required=True)
+    preflight.add_argument("--engine-version", required=True)
     preflight.add_argument("--memory-bytes", type=int, required=True)
     preflight.add_argument("--cpus", type=int, required=True)
     preflight.add_argument("--offline", action="store_true", help="Skip public DNS checks, for token recovery only.")
@@ -168,6 +161,7 @@ def main() -> int:
     try:
         if args.command == "preflight":
             validate_compose_version(args.compose_version)
+            validate_engine_version(args.engine_version)
             validate_resources(args.memory_bytes, args.cpus, shutil.disk_usage(ROOT).free)
             validate_cpu(platform.machine(), Path("/proc/cpuinfo").read_text(encoding="utf-8"))
             if not args.offline:

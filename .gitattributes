@@ -5,3 +5,4 @@
 *.json text eol=lf
 *.html text eol=lf
 *.ps1 text eol=crlf
+crawler/os-packages.txt text eol=lf

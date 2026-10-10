@@ -1,6 +1,7 @@
 """Exercise secret setup and the supplied command-line clients without the web."""
 
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -10,17 +11,41 @@ import sys
 import tempfile
 import threading
 import unittest
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import api
 import common
+import package
 import setup as installation
 import smoke_test
 
 
 class InstallationTests(unittest.TestCase):
+    def test_indented_quoted_commented_crlf_credentials_are_rotated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / '.env'
+            original = ''.join(f' \t{key} = "{index * 64}" # keep {key}\r\n'
+                               for key, index in zip(common.SECRET_KEYS, 'abc'))
+            path.write_bytes(original.encode())
+            with contextlib.redirect_stdout(io.StringIO()):
+                installation.configure(path, rotate=True)
+            changed = common.read_env(path)
+            for key, index in zip(common.SECRET_KEYS, 'abc'):
+                self.assertNotEqual(changed[key], index * 64)
+                self.assertRegex(changed[key], r'^[0-9a-f]{64}$')
+                self.assertIn(f'# keep {key}', path.read_text())
+            self.assertEqual(len({changed[key] for key in common.SECRET_KEYS}), 3)
+
+    def test_literal_environment_comments_quotes_and_bad_quotes(self):
+        self.assertEqual(common.parse_env(' A="value # literal" # comment\r\n\tB=plain # tail\n'),
+                         {'A': 'value # literal', 'B': 'plain'})
+        for text in ('A="unfinished', 'A="value"oops'):
+            with self.assertRaises(ValueError):
+                common.parse_env(text)
+
     def test_generated_secrets_are_private_distinct_and_preserved_on_rerun(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / ".env"
@@ -72,6 +97,29 @@ class InstallationTests(unittest.TestCase):
             self.assertEqual(path.read_text(), original)
 
 
+class ReleasePackageTests(unittest.TestCase):
+    def test_release_archive_and_checksum_are_readable_by_other_users(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'sourceferry.zip'
+            previous_umask = os.umask(0o077) if os.name != 'nt' else None
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    package.build(output)
+            finally:
+                if previous_umask is not None:
+                    os.umask(previous_umask)
+            checksum = output.with_suffix('.zip.sha256')
+            if os.name != 'nt':
+                for path in (output, checksum):
+                    self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o644)
+            digest = hashlib.sha256(output.read_bytes()).hexdigest()
+            self.assertEqual(checksum.read_text(), f'{digest}  {output.name}\n')
+            with zipfile.ZipFile(output) as archive:
+                self.assertIsNone(archive.testzip())
+                self.assertIn('sourceferry/install.sh', archive.namelist())
+                self.assertNotIn('sourceferry/.env', archive.namelist())
+
+
 class ClientTests(unittest.TestCase):
     def test_clients_load_token_from_env_and_smoke_check_the_full_contract(self):
         token = "b" * 64
@@ -119,7 +167,11 @@ class ClientTests(unittest.TestCase):
             address = f"http://127.0.0.1:{server.server_port}"
             try:
                 # Environment settings in the user's session must not affect fixtures.
-                with patch.dict(os.environ, {}, clear=True):
+                # Windows SSL initialization needs SystemRoot even for a local
+                # HTTP fixture because urllib constructs its HTTPS handler too.
+                system_environment = {key: value for key, value in os.environ.items()
+                                      if key.upper() in {'SYSTEMROOT', 'WINDIR'}}
+                with patch.dict(os.environ, system_environment, clear=True):
                     with contextlib.redirect_stdout(io.StringIO()) as output:
                         with patch.object(sys, "argv", ["smoke_test.py", "--env-file", str(path), "--base-url", address, "--wait-seconds", "0"]):
                             self.assertEqual(smoke_test.main(), 0)

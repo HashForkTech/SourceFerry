@@ -6,6 +6,10 @@ Reports contain only check statuses and metrics, never tokens or page contents.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from functools import partial
+from typing import Any
+
 import argparse
 import base64
 from datetime import datetime, timezone
@@ -18,9 +22,9 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlsplit
 
-from common import GatewayClient, ROOT, is_placeholder
+from common import GatewayClient, ROOT, is_placeholder, canonical_url, valid_http_url as valid_url
 
 STATIC_MARKER = "Static canary: violet otter"
 BROWSER_MARKER = "Browser rendered: cobalt badger 7319"
@@ -53,27 +57,6 @@ def default_canary_url() -> str:
         raise VerificationError("Cannot read the bundled browser verification page.") from None
     encoded = base64.urlsafe_b64encode(html).decode("ascii")
     return CANARY_ORIGIN + encoded
-
-
-def valid_url(url: str) -> bool:
-    try:
-        parts = urlsplit(url)
-        _ = parts.port
-        return (parts.scheme in {"http", "https"} and bool(parts.hostname)
-                and parts.username is None and parts.password is None
-                and not any(character.isspace() or ord(character) < 32 for character in url))
-    except ValueError:
-        return False
-
-
-def canonical_url(url: str) -> str:
-    parts = urlsplit(url)
-    hostname = (parts.hostname or "").lower().removeprefix("www.")
-    if ":" in hostname:
-        hostname = f"[{hostname}]"
-    if parts.port is not None and (parts.scheme, parts.port) not in {("http", 80), ("https", 443)}:
-        hostname += f":{parts.port}"
-    return urlunsplit((parts.scheme.lower(), hostname, (parts.path or "/").rstrip("/") or "/", parts.query, ""))
 
 
 def matches_groups(text: str, groups: list[list[str]]) -> bool:
@@ -134,15 +117,17 @@ def check_fetch(client: AcceptanceClient, url: str, groups: list[list[str]], *,
     content = fetched.get("content")
     require(isinstance(content, dict) and content.get("success") is True,
             "Crawl4AI did not report a successful fetch.")
+    assert isinstance(content, dict)
     markdown = content.get("markdown")
     require(isinstance(markdown, str) and len(markdown.strip()) >= min_chars,
             "Fetched Markdown is empty or too short to verify.")
+    assert isinstance(markdown, str)
     require(not is_blocked_page(markdown), "Fetch returned an anti-bot challenge instead of the requested page.")
     require(matches_groups(markdown, groups), "Fetched Markdown is missing the expected page topic.")
     if browser:
         require(STATIC_MARKER in markdown, "Fetch is missing the known static canary content.")
         require(BROWSER_MARKER in markdown, "Fetch is missing the JavaScript-generated browser marker.")
-    metrics = {"markdown_characters": len(markdown), "browser_marker": browser}
+    metrics: dict[str, Any] = {"markdown_characters": len(markdown), "browser_marker": browser}
     if browser:
         metrics["fixture_domain"] = (urlsplit(url).hostname or "").lower()
     return metrics
@@ -156,6 +141,7 @@ def check_search(client: AcceptanceClient, case: dict, *, max_results: int, snip
     sources = searched.get("sources")
     require(isinstance(sources, list) and 0 < len(sources) <= max_results,
             "Search returned no usable sources or exceeded the requested result limit.")
+    assert isinstance(sources, list)
     require(searched.get("truncated") is False, "Search response has an unexpected truncated flag.")
     try:
         enriched = int(headers["x-crawl4ai-enriched"])
@@ -244,7 +230,7 @@ def preserve_installer_report(path: Path, report: dict) -> dict:
     preserved_stages = []
     for stage in stages:
         require(isinstance(stage, dict) and isinstance(stage.get("stage"), str)
-                and re.fullmatch(r"[a-z][a-z0-9-]{0,63}", stage["stage"])
+                and bool(re.fullmatch(r"[a-z][a-z0-9-]{0,63}", stage["stage"]))
                 and stage.get("status") in allowed_statuses,
                 "Existing installer stage contains invalid fields.")
         preserved_stages.append({"stage": stage["stage"], "status": stage["status"]})
@@ -266,11 +252,11 @@ class Verifier:
         self.cases, self.wait_seconds = cases, wait_seconds
         self.attempts, self.retry_delay = attempts, retry_delay
         self.max_results, self.snippet_limit = max_results, snippet_limit
-        self.report = {"version": 1, "started_at": utc_now(), "checks": []}
+        self.report: dict[str, Any] = {"version": 1, "started_at": utc_now(), "checks": []}
 
-    def run_check(self, name: str, operation, *, retry: bool = False) -> dict:
+    def run_check(self, name: str, operation: Callable[[], dict], *, retry: bool = False) -> dict:
         started = time.monotonic()
-        result = {"name": name, "status": "failed", "attempts": 0}
+        result: dict[str, Any] = {"name": name, "status": "failed", "attempts": 0}
         for attempt in range(1, (self.attempts if retry else 1) + 1):
             result["attempts"] = attempt
             try:
@@ -299,7 +285,7 @@ class Verifier:
             except VerificationError:
                 pass
             if time.monotonic() >= deadline:
-                raise VerificationError("Gateway did not become healthy before the readiness timeout.")
+                raise VerificationError("Gateway did not become healthy before the liveness timeout.")
             time.sleep(min(1, max(0, deadline - time.monotonic())))
 
     def authentication(self) -> dict:
@@ -313,7 +299,7 @@ class Verifier:
         return {"rejected_requests": checks}
 
     def run(self) -> dict:
-        health = self.run_check("Gateway readiness", self.health)
+        health = self.run_check("Gateway liveness", self.health)
         if health["status"] == "passed":
             self.run_check("Authentication rejects missing and incorrect tokens", self.authentication)
             self.run_check("Browser fetch returns known static and JavaScript content",
@@ -323,8 +309,8 @@ class Verifier:
             for index, case in enumerate(self.cases, start=1):
                 # Never echo user-defined query/name or upstream text into reports.
                 live_checks.append(self.run_check(f"Live search and returned-source fetch {index}",
-                    lambda case=case: check_search(self.client, case, max_results=self.max_results,
-                                                  snippet_limit=self.snippet_limit), retry=True))
+                    partial(check_search, self.client, case, max_results=self.max_results,
+                            snippet_limit=self.snippet_limit), retry=True))
             enriched = sum(check.get("metrics", {}).get("enriched", 0) for check in live_checks)
             fallback = sum(check.get("metrics", {}).get("fallback", 0) for check in live_checks)
 

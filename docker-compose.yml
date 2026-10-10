@@ -7,6 +7,14 @@ services:
       args:
         PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12-slim@sha256:05cda9777409a9c3ffddd94a4c476b79f0769a0b4857f0c7ed9226b6800b0d6f}
     restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 1g
+    cpus: 2.0
+    pids_limit: 128
     environment:
       LOCAL_WEB_API_TOKEN: ${LOCAL_WEB_API_TOKEN:?Run the setup script to create .env first}
       CRAWL4AI_API_TOKEN: ${CRAWL4AI_API_TOKEN:?Run the setup script to create .env first}
@@ -16,6 +24,11 @@ services:
       CRAWL4AI_TIMEOUT_SECONDS: ${CRAWL4AI_TIMEOUT_SECONDS:-120}
       ENRICHMENT_CONCURRENCY: ${ENRICHMENT_CONCURRENCY:-4}
       SNIPPET_MAX_CHARS: ${SNIPPET_MAX_CHARS:-1200}
+      GATEWAY_MAX_REQUESTS: ${GATEWAY_MAX_REQUESTS:-8}
+      MAX_REQUEST_BYTES: ${MAX_REQUEST_BYTES:-65536}
+      MAX_UPSTREAM_BYTES: ${MAX_UPSTREAM_BYTES:-8388608}
+      SNIPPET_INPUT_MAX_CHARS: ${SNIPPET_INPUT_MAX_CHARS:-65536}
+      REQUEST_DEADLINE_SECONDS: ${REQUEST_DEADLINE_SECONDS:-300}
     ports:
       - target: 8080
         published: "${GATEWAY_PORT:-8080}"
@@ -27,7 +40,7 @@ services:
       crawl4ai:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/ready', timeout=5)"]
       interval: 30s
       timeout: 10s
       start_period: 20s
@@ -41,6 +54,10 @@ services:
   searxng:
     image: ${SEARXNG_IMAGE:-ghcr.io/searxng/searxng:2026.10.7-6671d89be@sha256:cc026dbee25b864d7f9731957cd5ef36ba2e2d61abd2996d57f1b863483e7409}
     restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    mem_limit: 1g
+    cpus: 2.0
+    pids_limit: 256
     environment:
       SEARXNG_SECRET: ${SEARXNG_SECRET_KEY:?Run the setup script to create .env first}
       FORCE_OWNERSHIP: "false"
@@ -60,10 +77,21 @@ services:
     logging: *logging
 
   crawl4ai:
-    image: ${CRAWL4AI_IMAGE:-unclecode/crawl4ai:0.9.2@sha256:bd36741e7bdd35ddc1a05d9183e1d6d8cefb61dd640d944a25d026b76e917690}
+    build:
+      context: ./crawler
+      args:
+        CRAWL4AI_IMAGE: ${CRAWL4AI_IMAGE:-unclecode/crawl4ai:0.9.4@sha256:9021b3cb5c6f12570bbcd5395638495e0a06969b3148e377b953d174af2ebc9b}
     restart: unless-stopped
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 4g
+    cpus: 4.0
+    pids_limit: 512
     shm_size: "1gb"
     environment:
       CRAWL4AI_API_TOKEN: ${CRAWL4AI_API_TOKEN:?Run the setup script to create .env first}
+      CRAWL4AI_ALLOW_INTERNAL_URLS: "false"
+      CRAWL4AI_ALLOW_INSECURE_TLS: "false"
+      CRAWL4AI_HOOKS_ENABLED: "false"
     # The official image supplies an HTTP /health check.
     logging: *logging

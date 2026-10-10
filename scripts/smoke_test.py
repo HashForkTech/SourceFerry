@@ -47,9 +47,11 @@ def main() -> int:
         require(status == 200, f"/fetch returned HTTP {status}.")
         content = fetched.get("content")
         require(isinstance(content, dict), "/fetch content is not an object.")
+        assert isinstance(content, dict)
         require(content.get("success") is True, "Crawl4AI reported an unsuccessful fetch.")
         markdown = content.get("markdown")
         require(isinstance(markdown, str) and bool(markdown.strip()), "Fetched Markdown is empty.")
+        assert isinstance(markdown, str)
         require(fetched.get("url") == args.fetch_url and fetched.get("truncated") is False, "/fetch response shape differs from the documented API.")
         print(f"PASS: /fetch returned {len(markdown)} Markdown characters")
 
@@ -57,6 +59,7 @@ def main() -> int:
         require(status == 200, f"/search returned HTTP {status}.")
         sources = searched.get("sources")
         require(isinstance(sources, list) and 0 < len(sources) <= 3, "Search returned no usable results, or exceeded its requested limit.")
+        assert isinstance(sources, list)
         require(searched.get("truncated") is False, "/search truncated flag differs from the documented API.")
         for source in sources:
             require(isinstance(source, dict) and isinstance(source.get("url"), str) and isinstance(source.get("snippet"), str) and "title" in source, "A search source does not have the documented url/title/snippet shape.")

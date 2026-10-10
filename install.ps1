@@ -4,6 +4,7 @@ param(
     [switch]$Verify,
     [switch]$ShowToken,
     [switch]$Help,
+    [switch]$RotateSecrets,
     [ValidateRange(1, 3600)][int]$WaitTimeout = 300
 )
 
@@ -17,7 +18,7 @@ $Stage = 'prerequisites'
 $HelperReady = $false
 $ReportReady = $false
 $SavedEnvironment = @{}
-$SettingsKeys = @('LOCAL_WEB_API_TOKEN', 'CRAWL4AI_API_TOKEN', 'SEARXNG_SECRET_KEY', 'GATEWAY_BIND_ADDRESS', 'GATEWAY_PORT', 'LOCAL_WEB_GATEWAY_URL', 'PYTHON_IMAGE', 'SEARXNG_IMAGE', 'CRAWL4AI_IMAGE', 'SEARXNG_TIMEOUT_SECONDS', 'CRAWL4AI_TIMEOUT_SECONDS', 'ENRICHMENT_CONCURRENCY', 'SNIPPET_MAX_CHARS', 'API_CLIENT_TIMEOUT_SECONDS')
+$SettingsKeys = @('LOCAL_WEB_API_TOKEN', 'CRAWL4AI_API_TOKEN', 'SEARXNG_SECRET_KEY', 'GATEWAY_BIND_ADDRESS', 'GATEWAY_PORT', 'LOCAL_WEB_GATEWAY_URL', 'PYTHON_IMAGE', 'SEARXNG_IMAGE', 'CRAWL4AI_IMAGE', 'SEARXNG_TIMEOUT_SECONDS', 'CRAWL4AI_TIMEOUT_SECONDS', 'ENRICHMENT_CONCURRENCY', 'SNIPPET_MAX_CHARS', 'API_CLIENT_TIMEOUT_SECONDS', 'GATEWAY_MAX_REQUESTS', 'MAX_REQUEST_BYTES', 'MAX_UPSTREAM_BYTES', 'SNIPPET_INPUT_MAX_CHARS', 'REQUEST_DEADLINE_SECONDS')
 $OriginalLocation = Get-Location
 
 function Invoke-Docker {
@@ -49,12 +50,22 @@ function Read-Environment([string]$Text) {
         $Key = $Matches[1]
         $Value = $Matches[2]
         if ($Values.ContainsKey($Key)) { throw "Duplicate .env setting: $Key." }
-        if ($Value.Length -ge 2 -and $Value[0] -eq $Value[$Value.Length - 1] -and ($Value[0] -eq '"' -or $Value[0] -eq "'")) {
-            $Value = $Value.Substring(1, $Value.Length - 2)
-        }
+        $Value = (Split-EnvironmentValue $Value).Value
         $Values[$Key] = $Value
     }
     return $Values
+}
+
+function Split-EnvironmentValue([string]$Value) {
+    if ($Value.StartsWith('"') -or $Value.StartsWith("'")) {
+        $End = $Value.IndexOf($Value[0], 1)
+        if ($End -lt 0) { throw 'Invalid quoted .env value.' }
+        $Tail = $Value.Substring($End + 1)
+        if ($Tail.Trim() -and -not $Tail.Trim().StartsWith('#')) { throw 'Invalid quoted .env value.' }
+        return @{ Value = $Value.Substring(1, $End - 1); Comment = $Tail }
+    }
+    $Parts = [regex]::Split($Value, '([ \t]+#.*)$')
+    return @{ Value = $Parts[0].Trim(); Comment = $(if ($Parts.Length -gt 1) { $Parts[1] } else { '' }) }
 }
 
 function Test-Placeholder([string]$Value) {
@@ -83,6 +94,7 @@ function Initialize-Environment {
         $Content = [IO.File]::ReadAllText((Join-Path $InstallRoot '.env.example'))
     }
     $Values = Read-Environment $Content
+    $OriginalValues = $Values.Clone()
     $Defaults = Read-Environment ([IO.File]::ReadAllText((Join-Path $InstallRoot '.env.example')))
     foreach ($Key in $Defaults.Keys) {
         if (-not $Values.ContainsKey($Key)) {
@@ -94,16 +106,28 @@ function Initialize-Environment {
     $SecretKeys = @('LOCAL_WEB_API_TOKEN', 'CRAWL4AI_API_TOKEN', 'SEARXNG_SECRET_KEY')
     foreach ($Key in $SecretKeys) {
         $Value = $Values[$Key]
-        if (-not (Test-Placeholder $Value)) {
+        if (-not $RotateSecrets -and -not (Test-Placeholder $Value)) {
             if ($Value.Length -lt 32 -or $Value -match '\s') { throw "$Key must contain at least 32 characters without whitespace. Correct .env before retrying." }
             if (-not $Kept.Add($Value)) { throw 'The three .env secrets must be distinct. Correct .env before retrying.' }
         }
     }
     foreach ($Key in $SecretKeys) {
-        if (Test-Placeholder $Values[$Key]) {
-            do { $Value = New-Secret } while (-not $Kept.Add($Value))
-            $Content = [regex]::Replace($Content, "(?m)^$Key\s*=.*$", "$Key=$Value")
+        if ($RotateSecrets -or (Test-Placeholder $Values[$Key])) {
+            do { $Value = New-Secret } while ($OriginalValues.ContainsValue($Value) -or -not $Kept.Add($Value))
+            $Pattern = "(?m)^(?<prefix>[ \t]*)$Key[ \t]*=[ \t]*(?<value>[^\r\n]*)"
+            if ([regex]::Matches($Content, $Pattern).Count -ne 1) { throw "Expected exactly one assignment for $Key." }
+            $Content = [regex]::Replace($Content, $Pattern, {
+                param($Match)
+                $Comment = (Split-EnvironmentValue $Match.Groups['value'].Value).Comment
+                return $Match.Groups['prefix'].Value + $Key + '=' + $Value + $Comment
+            })
+            $Values[$Key] = $Value
         }
+    }
+    $Written = Read-Environment $Content
+    foreach ($Key in $SecretKeys) {
+        if ($Written[$Key] -cne $Values[$Key] -or (Test-Placeholder $Written[$Key])) { throw 'Secret update verification failed.' }
+        if ($RotateSecrets -and $Written[$Key] -ceq $OriginalValues[$Key]) { throw 'Secret rotation did not replace every credential.' }
     }
     $TemporaryFile = Join-Path $InstallRoot ('.env.' + [Guid]::NewGuid().ToString('N') + '.tmp')
     try {
@@ -121,18 +145,19 @@ function Initialize-Environment {
     } finally {
         if (Test-Path -LiteralPath $TemporaryFile) { Remove-Item -LiteralPath $TemporaryFile -Force }
     }
-    Write-Host 'PASS Private .env prepared; existing secrets and configuration preserved.'
+    Write-Host 'PASS Private .env prepared; secrets verified and configuration preserved.'
 }
 
 try {
     if ($Help) {
         Write-Host 'SourceFerry - web search and fetch for AI clients'
-        Write-Host 'Usage: .\install.ps1 [-Verify | -ShowToken] [-WaitTimeout 300]'
-        Write-Host 'Requires Docker Desktop with Linux containers and Docker Compose v2.24+.'
+        Write-Host 'Usage: .\install.ps1 [-Verify | -ShowToken] [-RotateSecrets] [-WaitTimeout 300]'
+        Write-Host 'Requires Docker Engine 28+ / Docker Desktop with Linux containers and Docker Compose v2.24+.'
         Write-Host '-Verify reruns all acceptance checks; -ShowToken displays saved client settings.'
         Write-Host 'This product includes software developed by UncleCode (https://x.com/unclecode) as part of the Crawl4AI project (https://github.com/unclecode/crawl4ai).'
         exit 0
     }
+    if ($RotateSecrets -and ($Verify -or $ShowToken)) { throw 'RotateSecrets requires installation mode.' }
     if ($Verify -and $ShowToken) { throw 'Use either -Verify or -ShowToken.' }
     if ($env:OS -ne 'Windows_NT') { throw 'Use bash ./install.sh on Linux.' }
     if ($ProjectName -notmatch '^[a-z0-9][a-z0-9_-]*$') { throw 'COMPOSE_PROJECT_NAME must contain lowercase letters, digits, underscores or hyphens.' }
@@ -151,7 +176,7 @@ try {
         Remove-Item -LiteralPath "Env:$Key" -ErrorAction SilentlyContinue
     }
     if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { throw 'Install Docker Desktop with the WSL 2 backend first, start it, and switch to Linux containers. See README.md.' }
-    $DockerInfo = (Invoke-Docker info --format '{{.OSType}}|{{.NCPU}}|{{.MemTotal}}') -split '\|'
+    $DockerInfo = (Invoke-Docker info --format '{{.OSType}}|{{.NCPU}}|{{.MemTotal}}|{{.ServerVersion}}') -split '\|'
     if ($DockerInfo[0] -ne 'linux') { throw 'Switch Docker Desktop to Linux containers.' }
     $ContextHost = Invoke-Docker context inspect --format '{{.Endpoints.docker.Host}}'
     $DockerHost = if ($env:DOCKER_HOST) { $env:DOCKER_HOST } else { $ContextHost }
@@ -168,7 +193,7 @@ try {
     Add-Pass
 
     $Stage = 'prerequisites'
-    Invoke-Helper preflight --compose-version $ComposeVersion --memory-bytes $DockerInfo[2] --cpus $DockerInfo[1]
+    Invoke-Helper preflight --engine-version $DockerInfo[3] --compose-version $ComposeVersion --memory-bytes $DockerInfo[2] --cpus $DockerInfo[1]
     Add-Pass
 
     $Stage = 'configuration'
@@ -190,8 +215,8 @@ try {
 
     $Stage = 'images'
     if (-not $Verify) {
-        Invoke-Compose pull searxng crawl4ai
-        Invoke-Compose build gateway
+        Invoke-Compose pull searxng
+        Invoke-Compose build --pull gateway crawl4ai
     }
     if (-not $Verify) {
         $GatewayImage = Invoke-Docker image inspect --format '{{.Id}}' "$ProjectName-gateway"

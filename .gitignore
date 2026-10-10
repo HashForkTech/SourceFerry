@@ -10,6 +10,8 @@ __pycache__/
 htmlcov/
 dist/
 artifacts/
+.ruff_cache/
+.mypy_cache/
 *.log
 *.zip
 *.tar.gz
