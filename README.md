@@ -25,6 +25,61 @@ Only the gateway exposes a host port. SearXNG and Crawl4AI communicate on Docker
 
 Install Docker first using its [Linux instructions](https://docs.docker.com/engine/install/) or [Windows instructions](https://docs.docker.com/desktop/setup/install/windows-install/).
 
+### Docker installation on Ubuntu
+
+Install Docker Engine and the Compose plugin using [Docker's official APT repository instructions](https://docs.docker.com/engine/install/ubuntu/#install-using-the-apt-repository).
+
+**Docker installed through Snap is incompatible with SourceFerry's security settings.** SourceFerry enables `no-new-privileges:true`, which Snap's AppArmor confinement can prevent from working. [Canonical documents this limitation](https://github.com/canonical/docker-snap#usage).
+
+Typical symptoms are containers repeatedly restarting with messages such as:
+
+```text
+exec /usr/local/searxng/entrypoint.sh: operation not permitted
+exec /usr/bin/bash: operation not permitted
+```
+
+Check whether Docker is installed through Snap:
+
+```bash
+sudo snap list docker
+sudo docker info --format 'DockerRootDir={{.DockerRootDir}}'
+```
+
+A Docker root directory under `/var/snap/docker/` indicates Snap-managed storage.
+
+To switch to the official Docker packages:
+
+1. Preserve the SourceFerry installation directory, especially `.env`, which contains your configuration and API keys.
+2. If Docker hosts other applications, back up their data and plan their migration first. **Disabling Snap Docker stops all containers it manages.** Its images, containers, and volumes do not automatically transfer to the replacement installation.
+3. From the SourceFerry directory, stop the stack and disable Snap Docker:
+
+   ```bash
+   sudo docker compose stop
+   sudo snap disable docker
+   ```
+
+4. Follow [Docker's official Ubuntu APT installation instructions](https://docs.docker.com/engine/install/ubuntu/#install-using-the-apt-repository). Install Docker Engine, Buildx, and the Compose plugin. Leave Snap Docker disabled while the replacement daemon is running.
+5. Confirm that the previously incompatible security setting now works:
+
+   ```bash
+   sudo /usr/bin/docker run --rm --network none \
+     --security-opt no-new-privileges:true hello-world
+   ```
+
+   Expected output includes:
+
+   ```text
+   Hello from Docker!
+   ```
+
+6. From the SourceFerry directory, rebuild and verify the installation:
+
+   ```bash
+   sudo bash ./install.sh
+   ```
+
+The installer downloads/builds the required images and tests installation, search, and fetch. It preserves valid existing configuration and API keys in `.env`.
+
 ## Install with one command
 
 Clone the repository or extract the release ZIP, open a terminal in its directory, and run:
@@ -32,8 +87,10 @@ Clone the repository or extract the release ZIP, open a terminal in its director
 Linux:
 
 ```bash
-bash ./install.sh
+sudo bash ./install.sh
 ```
+
+Use `sudo` when Docker requires root access or the installation files are root-owned. You can omit it if your user has Docker access and owns the installation files.
 
 Windows PowerShell:
 
@@ -70,13 +127,76 @@ LOCAL_WEB_API_TOKEN=<your gateway API key>
 
 Requests to `POST /search` and `POST /fetch` send `Authorization: Bearer <your gateway API key>`. `GET /health` is public liveness; `/ready` checks both backends. Search accepts `queries` and `max_results`; fetch accepts `url`. See the [API contract](docs/API.md) for JSON examples, field limits, response fields, and errors. The client only needs the gateway key.
 
-For a client on another machine, edit `.env` to set `GATEWAY_BIND_ADDRESS` to the gateway's LAN IP address (or `0.0.0.0`), set `LOCAL_WEB_GATEWAY_URL` to `http://<gateway-lan-ip>:8080`, and apply:
+### Make the gateway accessible on your LAN
 
-```bash
-docker compose up -d gateway
-```
+By default, the gateway listens on `127.0.0.1`, so only the server itself can connect.
 
-Use that LAN URL in your client. If you change `GATEWAY_PORT`, include the new port in both URLs. Restrict access to trusted clients; use HTTPS or a VPN across untrusted networks.
+1. Open a terminal on the Ubuntu server and enter the SourceFerry installation directory. Replace the example path with your actual location:
+
+   ```bash
+   cd /path/to/SourceFerry
+   ```
+
+2. Find the server's LAN IP address:
+
+   ```bash
+   ip -4 addr show
+   ```
+
+   Choose the address assigned to its Ethernet or Wi-Fi interface. Do not use a Docker bridge address.
+
+3. Edit the hidden configuration file:
+
+   ```bash
+   sudo nano .env
+   ```
+
+   If the installer ran with `sudo`, you will normally also need `sudo` to read or edit this file.
+
+   For a server whose LAN address is `192.168.1.50`, set:
+
+   ```dotenv
+   GATEWAY_BIND_ADDRESS=192.168.1.50
+   GATEWAY_PORT=8080
+   LOCAL_WEB_GATEWAY_URL=http://192.168.1.50:8080
+   ```
+
+   Replace `192.168.1.50` with your server's actual address. Preserve the existing API keys. In Nano, save with **Ctrl+O**, press **Enter**, then exit with **Ctrl+X**.
+
+4. Apply the change with **this single command**:
+
+   ```bash
+   sudo docker compose up -d --no-deps --force-recreate gateway
+   ```
+
+   This recreates the gateway using the updated configuration without restarting its dependencies. A plain container restart does not apply a changed port binding.
+
+5. From another computer on the same LAN, test:
+
+   ```bash
+   curl http://192.168.1.50:8080/health
+   ```
+
+   Expected response:
+
+   ```json
+   {"status":"ok"}
+   ```
+
+6. Configure your AI client with:
+
+   ```dotenv
+   LOCAL_WEB_GATEWAY_URL=http://192.168.1.50:8080
+   LOCAL_WEB_API_TOKEN=<your existing gateway API key>
+   ```
+
+   Search and fetch requests still require:
+
+   ```http
+   Authorization: Bearer <your gateway API key>
+   ```
+
+Use a stable LAN address, preferably through a DHCP reservation. If you change `GATEWAY_PORT`, update the port in both server and client URLs. Restrict access to trusted clients; use HTTPS or a VPN across untrusted networks.
 
 ## Included tuning
 
