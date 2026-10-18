@@ -2,6 +2,8 @@
 
 *A local web search and fetch gateway for AI clients*
 
+A [SourceFerry plugin for DeepSeek Harness](https://github.com/HashForkTech/Deepseek-Harness-SourceFerry-Plugin) is available.
+
 SourceFerry brings web search and page content to AI clients through a local, authenticated API. It cleans and deduplicates results, and limits successfully enriched search snippets to help reduce the tokens sent to AI models. Powered by SearXNG and Crawl4AI, it combines metasearch with browser rendering and readable Markdown extraction.
 
 ```text
